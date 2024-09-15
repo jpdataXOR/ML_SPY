@@ -7,14 +7,29 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
 import datetime
+import requests
 
-# Function to fetch SPY data
-def fetch_spy_data():
+# Function to get list of tickers
+@st.cache_data
+def get_ticker_list():
+    url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all/all_tickers.txt"
+    response = requests.get(url)
+    tickers = response.text.split('\n')
+    tickers = [ticker.strip() for ticker in tickers if ticker.strip()]
+    
+    # Add additional indices
+    additional_indices = ['^SPX', '^AXJO', '^VIX', '^NDX','SPY']
+    tickers = additional_indices + tickers
+    
+    return list(dict.fromkeys(tickers))  # Remove duplicates while preserving order
+
+# Function to fetch instrument data
+def fetch_instrument_data(symbol):
     end_date = datetime.date.today()
     start_date = end_date - pd.DateOffset(years=5)  # Fetching data for the last 5 years or more
-    spy_data = yf.download("SPY", start=start_date, end=end_date)
-    spy_data.reset_index(inplace=True)
-    return spy_data
+    instrument_data = yf.download(symbol, start=start_date, end=end_date)
+    instrument_data.reset_index(inplace=True)
+    return instrument_data
 
 # Function to calculate trading days left in the month/year
 def calculate_trading_days_left(date, end_of_period):
@@ -68,16 +83,8 @@ def prepare_data(df):
                 'Extrapolated Return Till End of Month (%)', 'Extrapolated 10-Day Return Till End of Year (%)',
                 'Extrapolated 5-Day Return Till End of Year (%)']
     
-    target_1_day = 'Result_1-Day Forward Change (%)'
-    target_5_day = 'Result_5-Day Forward Change (%)'
-    
     # Remove rows with NaN values in feature columns (but keep NaNs in the target columns)
     df_clean = df.dropna(subset=features)
-    
-    # Debugging: Print information about NaN values
-    print("NaN values in each column:")
-    print(df_clean.isna().sum())
-    print("\nShape of cleaned dataframe:", df_clean.shape)
     
     return df_clean, features
 
@@ -116,7 +123,7 @@ def local_css(css_code):
     st.markdown(f'<style>{css_code}</style>', unsafe_allow_html=True)
 
 def main():
-    st.title("SPY Price Prediction with Neural Network")
+    st.title("Stock Price Prediction with Neural Network")
 
     # Apply custom CSS for table styling
     local_css("""
@@ -128,73 +135,83 @@ def main():
         }
     """)
 
-    # Fetch data
-    st.write("Fetching data...")
-    try:
-        spy_data = fetch_spy_data()
-    except Exception as e:
-        st.error(f"An error occurred during data fetching: {str(e)}")
-        return
+    # Get list of tickers
+    tickers = get_ticker_list()
 
-    # Prepare data
-    st.write("Preparing data...")
-    try:
-        df, features = prepare_data(spy_data)
-    except Exception as e:
-        st.error(f"An error occurred during data preparation: {str(e)}")
-        st.write("Debugging information:")
-        st.write("NaN values in DataFrame:")
-        st.write(df.isna().sum())
-        return
+    # Add instrument selection with autocomplete
+    default_instrument = "^SPX"
+    instrument = st.selectbox("Select or type to search for a Yahoo Finance instrument symbol", 
+                              options=tickers, 
+                              index=tickers.index(default_instrument))
 
-    # Train model and make predictions
-    st.write("Training model and making predictions...")
-    try:
-        df, model_1_day, model_5_day, scaler = train_model(df, features)
-        
-        # Display the table with all relevant information
-        st.write("Data with features, actual results, and model predictions (1-day and 5-day):")
-        columns_to_display = ['Date', 'Close', 'Day-10 Change (%)', 'Day-9 Change (%)', 'Day-8 Change (%)',
-                              'Day-7 Change (%)', 'Day-6 Change (%)', 'Day-5 Change (%)', 'Day-4 Change (%)',
-                              'Day-3 Change (%)', 'Day-2 Change (%)', 'Day-1 Change (%)',
-                              'ML_5-Day Moving Average (%)', 'ML_Volatility (5-Day) (%)', 'ML_Day of Week',
-                              'Extrapolated Return Till End of Month (%)', 'Extrapolated 10-Day Return Till End of Year (%)',
-                              'Extrapolated 5-Day Return Till End of Year (%)',
-                              'Result_1-Day Forward Change (%)', 'Predicted_1-Day Forward Change (%)', 
-                              'Result_5-Day Forward Change (%)', 'Predicted_5-Day Forward Change (%)']
-        
-        # Filter out columns that don't exist and sort by date (most recent first)
-        display_df = df[columns_to_display].sort_values('Date', ascending=False)
-        st.dataframe(display_df)
-        
-        # Display metrics for 1-day forward predictions
-        actual_1_day = df['Result_1-Day Forward Change (%)'].dropna()
-        predicted_1_day = df['Predicted_1-Day Forward Change (%)'].loc[actual_1_day.index]
-        mse_1_day = mean_squared_error(actual_1_day, predicted_1_day)
-        rmse_1_day = np.sqrt(mse_1_day)
-        st.write(f"Root Mean Squared Error of the 1-day forward prediction: {rmse_1_day:.4f}")
-        
-        # Display metrics for 5-day forward predictions
-        actual_5_day = df['Result_5-Day Forward Change (%)'].dropna()
-        predicted_5_day = df['Predicted_5-Day Forward Change (%)'].loc[actual_5_day.index]
-        mse_5_day = mean_squared_error(actual_5_day, predicted_5_day)
-        rmse_5_day = np.sqrt(mse_5_day)
-        st.write(f"Root Mean Squared Error of the 5-day forward prediction: {rmse_5_day:.4f}")
+    if st.button("Run Prediction"):
+        # Fetch data
+        st.write(f"Fetching data for {instrument}...")
+        try:
+            instrument_data = fetch_instrument_data(instrument)
+        except Exception as e:
+            st.error(f"An error occurred during data fetching: {str(e)}")
+            return
 
-        # Plot predictions vs actual for both 1-day and 5-day forward
-        st.line_chart({
-            "Actual 1-Day": actual_1_day,
-            "Predicted 1-Day": predicted_1_day,
-            "Actual 5-Day": actual_5_day,
-            "Predicted 5-Day": predicted_5_day
-        })
+        # Prepare data
+        st.write("Preparing data...")
+        try:
+            df, features = prepare_data(instrument_data)
+        except Exception as e:
+            st.error(f"An error occurred during data preparation: {str(e)}")
+            st.write("Debugging information:")
+            st.write("NaN values in DataFrame:")
+            st.write(df.isna().sum())
+            return
 
-    except Exception as e:
-        st.error(f"An error occurred during model training or prediction: {str(e)}")
-        st.write("Debugging information:")
-        st.write(f"DataFrame shape: {df.shape}")
-        st.write("NaN values in DataFrame:")
-        st.write(df.isna().sum())
+        # Train model and make predictions
+        st.write("Training model and making predictions...")
+        try:
+            df, model_1_day, model_5_day, scaler = train_model(df, features)
+            
+            # Rearrange columns for display
+            columns_to_display = ['Date', 'Close', 
+                                  'Result_1-Day Forward Change (%)', 'Predicted_1-Day Forward Change (%)', 
+                                  'Result_5-Day Forward Change (%)', 'Predicted_5-Day Forward Change (%)',
+                                  'Day-10 Change (%)', 'Day-9 Change (%)', 'Day-8 Change (%)',
+                                  'Day-7 Change (%)', 'Day-6 Change (%)', 'Day-5 Change (%)', 'Day-4 Change (%)',
+                                  'Day-3 Change (%)', 'Day-2 Change (%)', 'Day-1 Change (%)',
+                                  'ML_5-Day Moving Average (%)', 'ML_Volatility (5-Day) (%)', 'ML_Day of Week',
+                                  'Extrapolated Return Till End of Month (%)', 'Extrapolated 10-Day Return Till End of Year (%)',
+                                  'Extrapolated 5-Day Return Till End of Year (%)']
+            
+            # Filter out columns that don't exist and sort by date (most recent first)
+            display_df = df[columns_to_display].sort_values('Date', ascending=False)
+            st.dataframe(display_df)
+            
+            # Display metrics for 1-day forward predictions
+            actual_1_day = df['Result_1-Day Forward Change (%)'].dropna()
+            predicted_1_day = df['Predicted_1-Day Forward Change (%)'].loc[actual_1_day.index]
+            mse_1_day = mean_squared_error(actual_1_day, predicted_1_day)
+            rmse_1_day = np.sqrt(mse_1_day)
+            st.write(f"Root Mean Squared Error of the 1-day forward prediction: {rmse_1_day:.4f}")
+            
+            # Display metrics for 5-day forward predictions
+            actual_5_day = df['Result_5-Day Forward Change (%)'].dropna()
+            predicted_5_day = df['Predicted_5-Day Forward Change (%)'].loc[actual_5_day.index]
+            mse_5_day = mean_squared_error(actual_5_day, predicted_5_day)
+            rmse_5_day = np.sqrt(mse_5_day)
+            st.write(f"Root Mean Squared Error of the 5-day forward prediction: {rmse_5_day:.4f}")
+
+            # Plot predictions vs actual for both 1-day and 5-day forward
+            st.line_chart({
+                "Actual 1-Day": actual_1_day,
+                "Predicted 1-Day": predicted_1_day,
+                "Actual 5-Day": actual_5_day,
+                "Predicted 5-Day": predicted_5_day
+            })
+
+        except Exception as e:
+            st.error(f"An error occurred during model training or prediction: {str(e)}")
+            st.write("Debugging information:")
+            st.write(f"DataFrame shape: {df.shape}")
+            st.write("NaN values in DataFrame:")
+            st.write(df.isna().sum())
 
 if __name__ == "__main__":
     main()
