@@ -18,7 +18,7 @@ def get_ticker_list():
     tickers = [ticker.strip() for ticker in tickers if ticker.strip()]
     
     # Add additional indices
-    additional_indices = ['^SPX', '^AXJO', '^VIX', '^NDX','SPY']
+    additional_indices = ['^SPX', '^AXJO', '^VIX', '^NDX', 'SPY']
     tickers = additional_indices + tickers
     
     return list(dict.fromkeys(tickers))  # Remove duplicates while preserving order
@@ -26,17 +26,17 @@ def get_ticker_list():
 # Function to fetch instrument data
 def fetch_instrument_data(symbol):
     end_date = datetime.date.today()
-    start_date = end_date - pd.DateOffset(years=5)  # Fetching data for the last 5 years or more
+    start_date = end_date - pd.DateOffset(years=5)  # Fetching data for the last 5 years
     instrument_data = yf.download(symbol, start=start_date, end=end_date)
     instrument_data.reset_index(inplace=True)
     return instrument_data
 
 # Function to calculate trading days left in the month/year
 def calculate_trading_days_left(date, end_of_period):
-    remaining_dates = pd.date_range(date, end_of_period, freq='B')  # 'B' gives business days (weekdays)
+    remaining_dates = pd.date_range(date, end=end_of_period, freq='B')  # 'B' gives business days (weekdays)
     return len(remaining_dates)
 
-# Function to calculate end of year returns
+# Function to calculate extrapolated returns
 def calculate_extrapolated_returns(df):
     df['Trading Days Left in Month'] = df['Date'].apply(lambda x: calculate_trading_days_left(x, pd.Timestamp(x.year, x.month, 1) + pd.DateOffset(months=1, days=-1)))
     df['Trading Days Left in Year'] = df['Date'].apply(lambda x: calculate_trading_days_left(x, pd.Timestamp(x.year, 12, 31)))
@@ -60,6 +60,7 @@ def prepare_data(df):
     df.sort_values(by='Date', inplace=True)
     
     # Calculate daily percentage changes
+    df['Close%'] = df['Close'].pct_change() * 100  # Percentage change for Close
     df['Pct Change'] = df['Close'].pct_change() * 100
     
     # Calculate features (Day-10 to Day-1)
@@ -79,6 +80,7 @@ def prepare_data(df):
     
     # Define features and target for both 1-day and 5-day predictions
     features = [f'Day-{i} Change (%)' for i in range(1, 11)] + [
+                'Close%',  # Added Close% to features
                 'ML_5-Day Moving Average (%)', 'ML_Volatility (5-Day) (%)', 'ML_Day of Week',
                 'Extrapolated Return Till End of Month (%)', 'Extrapolated 10-Day Return Till End of Year (%)',
                 'Extrapolated 5-Day Return Till End of Year (%)']
@@ -117,6 +119,17 @@ def train_model(df, features):
     df['Predicted_5-Day Forward Change (%)'] = model_5_day.predict(X_scaled)
     
     return df, model_1_day, model_5_day, scaler
+
+# Function to color percentages
+def color_percentages(val):
+    """Function to color the percentage values."""
+    if pd.isna(val):
+        return ''
+    elif val > 0:
+        return 'background-color: rgba(0, 255, 0, 0.5)'  # Light green
+    elif val < 0:
+        return 'background-color: rgba(255, 0, 0, 0.5)'  # Light red
+    return ''
 
 # CSS to make the table wider and control column width
 def local_css(css_code):
@@ -157,33 +170,42 @@ def main():
         st.write("Preparing data...")
         try:
             df, features = prepare_data(instrument_data)
-        except Exception as e:
-            st.error(f"An error occurred during data preparation: {str(e)}")
-            st.write("Debugging information:")
-            st.write("NaN values in DataFrame:")
-            st.write(df.isna().sum())
-            return
 
-        # Train model and make predictions
-        st.write("Training model and making predictions...")
-        try:
+            # Train model and make predictions
+            st.write("Training model and making predictions...")
             df, model_1_day, model_5_day, scaler = train_model(df, features)
             
             # Rearrange columns for display
-            columns_to_display = ['Date', 'Close', 
+            columns_to_display = ['Date', 'Close', 'Close%', 
                                   'Result_1-Day Forward Change (%)', 'Predicted_1-Day Forward Change (%)', 
                                   'Result_5-Day Forward Change (%)', 'Predicted_5-Day Forward Change (%)',
                                   'Day-10 Change (%)', 'Day-9 Change (%)', 'Day-8 Change (%)',
-                                  'Day-7 Change (%)', 'Day-6 Change (%)', 'Day-5 Change (%)', 'Day-4 Change (%)',
-                                  'Day-3 Change (%)', 'Day-2 Change (%)', 'Day-1 Change (%)',
+                                  'Day-7 Change (%)', 'Day-6 Change (%)', 'Day-5 Change (%)', 
+                                  'Day-4 Change (%)', 'Day-3 Change (%)', 'Day-2 Change (%)', 
+                                  'Day-1 Change (%)',
                                   'ML_5-Day Moving Average (%)', 'ML_Volatility (5-Day) (%)', 'ML_Day of Week',
-                                  'Extrapolated Return Till End of Month (%)', 'Extrapolated 10-Day Return Till End of Year (%)',
+                                  'Extrapolated Return Till End of Month (%)', 
+                                  'Extrapolated 10-Day Return Till End of Year (%)',
                                   'Extrapolated 5-Day Return Till End of Year (%)']
             
             # Filter out columns that don't exist and sort by date (most recent first)
             display_df = df[columns_to_display].sort_values('Date', ascending=False)
-            st.dataframe(display_df)
             
+            # Apply styling to percentage columns
+            styled_df = display_df.style.applymap(color_percentages, 
+                subset=['Close%', 
+                        'Result_1-Day Forward Change (%)', 'Predicted_1-Day Forward Change (%)', 
+                        'Result_5-Day Forward Change (%)', 'Predicted_5-Day Forward Change (%)',
+                        'Day-10 Change (%)', 'Day-9 Change (%)', 'Day-8 Change (%)',
+                        'Day-7 Change (%)', 'Day-6 Change (%)', 'Day-5 Change (%)', 
+                        'Day-4 Change (%)', 'Day-3 Change (%)', 'Day-2 Change (%)', 
+                        'Day-1 Change (%)', 
+                        'Extrapolated Return Till End of Month (%)', 
+                        'Extrapolated 10-Day Return Till End of Year (%)',
+                        'Extrapolated 5-Day Return Till End of Year (%)'])
+            
+            st.dataframe(styled_df)
+
             # Display metrics for 1-day forward predictions
             actual_1_day = df['Result_1-Day Forward Change (%)'].dropna()
             predicted_1_day = df['Predicted_1-Day Forward Change (%)'].loc[actual_1_day.index]
